@@ -393,6 +393,70 @@ class DelegateContractTest(unittest.TestCase):
             self._check(self._graph_module(drop_input=True))
 
 
+class LiftedConstantCollisionTest(unittest.TestCase):
+    """Per-graph lifted-constant names must not collide across methods.
+
+    Edge lowering mints ``_lifted_tensor_constant{i}`` independently in each
+    method (e.g. the 0.125 attention scale and an int64 0 in the two halves
+    of a Whisper export), so unrelated scalars routinely share a name.
+    to_native namespaces those; genuine parameter fqn collisions still fail.
+    """
+
+    def _scalar_shift(self, offset: float):
+        class Shift(nn.Module):
+            def forward(self, x):
+                return x + offset
+
+        return torch.export.export(Shift(), (torch.randn(2, 4),))
+
+    def _package_keys(self, native) -> tuple[set[str], Program]:
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "m.ptn")
+            native.save(path)
+            with zipfile.ZipFile(path) as pkg:
+                entries = set(pkg.namelist())
+                owners = (
+                    _safetensors_keys(pkg.read(SAFETENSORS_ENTRY))
+                    if SAFETENSORS_ENTRY in entries
+                    else set()
+                )
+                aliases = (
+                    json.loads(pkg.read(ALIASES_ENTRY))
+                    if ALIASES_ENTRY in entries
+                    else {}
+                )
+                program = deserialize_program(pkg.read(PTG_ENTRY))
+        return owners | set(aliases), program
+
+    def test_distinct_lifted_constants_are_namespaced(self):
+        programs = {"a": self._scalar_shift(1.0), "b": self._scalar_shift(2.0)}
+        native = to_native(programs)
+        self.assertEqual(native.methods, {"a", "b"})
+        keys, program = self._package_keys(native)
+        lifted = {k for k in keys if "lifted" in k}
+        # One shared-name scalar per method: the first keeps the lifted
+        # name, the second is namespaced under its method.
+        self.assertEqual(len(lifted), 2, lifted)
+        self.assertTrue(any(k.startswith("b/") for k in lifted), lifted)
+        by_method = {m.name: m for m in program.methods}
+        b_keys = {c.data_key for c in by_method["b"].constants or []}
+        self.assertTrue(any(k.startswith("b/") for k in b_keys), b_keys)
+
+    def test_identical_lifted_constants_stay_shared(self):
+        programs = {"a": self._scalar_shift(1.0), "b": self._scalar_shift(1.0)}
+        keys, _ = self._package_keys(to_native(programs))
+        lifted = {k for k in keys if "lifted" in k}
+        self.assertEqual(len(lifted), 1, lifted)
+
+    def test_parameter_fqn_collision_is_still_rejected(self):
+        programs = {
+            "a": torch.export.export(nn.Linear(4, 4), (torch.randn(1, 4),)),
+            "b": torch.export.export(nn.Linear(4, 4), (torch.randn(1, 4),)),
+        }
+        with self.assertRaisesRegex(ValueError, "differs between methods"):
+            to_native(programs)
+
+
 class MutableBufferDedupTest(unittest.TestCase):
     def test_identical_mutable_buffers_stay_separate(self):
         """Equal bytes must not make two independently mutable buffers one.

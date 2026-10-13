@@ -37,10 +37,12 @@ import torch
 
 from executorch.backends.native.preprocess import NativeDelegateInfo
 from executorch.backends.native.serialization.graph_serialize import (
+    _compile_to_bytes,
     _same_tensor,
     collect_data_keys,
     deserialize_program,
     merge_programs,
+    rename_data_keys,
     validate_program,
 )
 from executorch.backends.native.serialization.schema import Program
@@ -278,6 +280,55 @@ def _merge_constants(
     return merged
 
 
+# Tensor constants minted by edge lowering (e.g. a float scalar a mul.Tensor
+# was widened to carry) get these per-graph names, so two methods routinely
+# hold different tensors under one name. The names carry no user meaning --
+# unlike parameter and buffer fqns, which must keep naming one buffer across
+# methods -- so collisions among them are namespaced per method instead of
+# rejected.
+_LIFTED_CONSTANT_PREFIX = "_lifted_tensor_constant"
+
+
+def _plan_lifted_constant_renames(
+    per_method: dict[str, dict[str, torch.Tensor]],
+    program: Program,
+) -> dict[str, dict[str, str]]:
+    """Per-method renames for lifted constants that collide across methods.
+
+    Only immutable lifted-constant keys whose tensor differs from an earlier
+    method's tensor under the same key are renamed (to ``<method>/<key>``,
+    disambiguated as needed); an identical tensor stays shared. A key any
+    method mutates is never renamed: mutability is package-wide, so that
+    collision still reaches ``_merge_constants`` and is rejected there.
+    """
+    mutated_keys = _mutable_data_keys(program)
+    taken = {key for constants in per_method.values() for key in constants}
+    seen: dict[str, torch.Tensor] = {}
+    renames: dict[str, dict[str, str]] = {}
+    for method_name, constants in per_method.items():
+        mapping: dict[str, str] = {}
+        for key, tensor in constants.items():
+            existing = seen.get(key)
+            if existing is None:
+                seen[key] = tensor
+                continue
+            if _same_tensor(existing, tensor):
+                continue
+            if not key.startswith(_LIFTED_CONSTANT_PREFIX) or key in mutated_keys:
+                continue
+            new_key = f"{method_name}/{key}"
+            suffix = 1
+            while new_key in taken:
+                suffix += 1
+                new_key = f"{method_name}/{key}#{suffix}"
+            mapping[key] = new_key
+            taken.add(new_key)
+            seen[new_key] = tensor
+        if mapping:
+            renames[method_name] = mapping
+    return renames
+
+
 def _check_shared_mutable_buffers(program: Program) -> None:
     """Hold the merged Program to serialize_program's cross-method guarantee.
 
@@ -380,7 +431,9 @@ def to_native(
         ValueError: If the method dictionary is empty, a method name is empty, a
             method does not fully delegate to the native backend, a constant
             differs between methods, or a data key the graph references has no
-            backing tensor.
+            backing tensor. Differing constants under an auto-generated
+            ``_lifted_tensor_constant{i}`` name are namespaced per method
+            instead of rejected (see ``_plan_lifted_constant_renames``).
     """
     method_programs = _normalize_programs(programs)
 
@@ -438,9 +491,22 @@ def to_native(
         method_constants[method_name] = _delegate_info(module, method_name).constants
 
     ptg_blob = merge_programs(method_blobs)
-    constants = _merge_constants(method_constants)
-
     program = deserialize_program(ptg_blob)
+
+    # Edge lowering mints per-graph lifted-constant names independently in
+    # each method, so unrelated scalars collide under one key. Namespace the
+    # colliding ones (graph blob and constant dicts together) before merging;
+    # genuine fqn collisions still reach _merge_constants and are rejected.
+    renames = _plan_lifted_constant_renames(method_constants, program)
+    if renames:
+        for method_name, mapping in renames.items():
+            rename_data_keys(program, method_name, mapping)
+            constants_for_method = method_constants[method_name]
+            for old_key, new_key in mapping.items():
+                constants_for_method[new_key] = constants_for_method.pop(old_key)
+        ptg_blob = _compile_to_bytes(program)
+
+    constants = _merge_constants(method_constants)
     _validate_merged_program(program, constants)
 
     return NativeProgramManager(ptg=ptg_blob, constants=constants)

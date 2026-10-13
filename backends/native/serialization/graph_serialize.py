@@ -1500,6 +1500,51 @@ def collect_data_keys(program: Program) -> set[str]:
     return keys
 
 
+def rename_data_keys(
+    program: Program, method_name: str, mapping: dict[str, str]
+) -> None:
+    """Rewrite one method's data keys in place, per ``collect_data_keys``.
+
+    Covers the same references that function collects: constant
+    ``NamedTensorRef.data_key`` values and ``AffineGroup`` scale/zero-point
+    keys on constant and graph-value tensor metas, recursing into HOP
+    subgraphs. Keys absent from ``mapping`` (and every other method) are
+    left alone, so callers namespace only the keys that collide.
+    """
+    if not mapping:
+        return
+
+    def rename_meta(meta: Optional[TensorMeta]) -> None:
+        if meta is None or meta.quant is None:
+            return
+        scheme = meta.quant.scheme
+        if isinstance(scheme, AffineGroup):
+            scheme.scale_data_key = mapping.get(
+                scheme.scale_data_key, scheme.scale_data_key
+            )
+            if scheme.zero_point_data_key:
+                scheme.zero_point_data_key = mapping.get(
+                    scheme.zero_point_data_key, scheme.zero_point_data_key
+                )
+
+    def visit_graph(graph: Graph) -> None:
+        for value in graph.tensor_values or []:
+            rename_meta(value.meta)
+        for node in graph.nodes:
+            for graph_arg in _iter_graph_args(node):
+                visit_graph(graph_arg.graph)
+
+    for method in program.methods:
+        if method.name != method_name:
+            continue
+        for constant in method.constants or []:
+            constant.data_key = mapping.get(constant.data_key, constant.data_key)
+            rename_meta(constant.meta)
+        visit_graph(method.graph)
+        return
+    raise ValueError(f"rename_data_keys: no method named {method_name!r}.")
+
+
 def _check_optional_tensor_list_refs(
     value: OptionalTensorListArg, ctx: str, check_ref: Any
 ) -> None:

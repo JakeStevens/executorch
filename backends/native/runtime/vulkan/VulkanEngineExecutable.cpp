@@ -42,6 +42,7 @@
 #include <executorch/backends/native/runtime/vulkan/passes/InsertPrepack.h>
 #include <executorch/backends/native/runtime/vulkan/passes/LowerHFAttention.h>
 #include <executorch/backends/native/runtime/vulkan/passes/LowerRMSNorm.h>
+#include <executorch/backends/native/runtime/vulkan/passes/LowerSDPA.h>
 #include <executorch/backends/native/runtime/vulkan/passes/MaterializeViewCopies.h>
 #include <executorch/runtime/core/freeable_buffer.h>
 
@@ -149,6 +150,10 @@ std::string registry_key(const std::string& target) {
       target.starts_with(kPrefix) ? target.substr(kPrefix.size()) : target;
   if (key == "aten.relu_.default") {
     key = "aten.relu.default";
+  } else if (key == "aten.gelu_.default") {
+    key = "aten.gelu.default";
+  } else if (key == "aten.sigmoid_.default") {
+    key = "aten.sigmoid.default";
   } else if (key == "llama.update_cache.default") {
     key = "update_cache.default";
   } else if (key == "aten.sym_size.int") {
@@ -171,13 +176,17 @@ std::string registry_key(const std::string& target) {
 // In-place targets that registry_key maps to a functional ET-VK kernel.
 bool is_functional_in_place(const std::string& target) {
   return target == "torch.ops.aten.relu_.default" ||
-      target == "aten.relu_.default";
+      target == "aten.relu_.default" ||
+      target == "torch.ops.aten.gelu_.default" ||
+      target == "aten.gelu_.default" ||
+      target == "torch.ops.aten.sigmoid_.default" ||
+      target == "aten.sigmoid_.default";
 }
 
 // Ops whose ET-VK implementations require width-packed operands. This list
 // seeds layout assignment; propagation below determines the final layouts.
 bool is_width_packed_op(std::string_view key) {
-  constexpr std::array<std::string_view, 12> kOps{
+  constexpr std::array<std::string_view, 13> kOps{
       "aten.linear.default",
       "aten.addmm.default",
       "aten.mm.default",
@@ -187,6 +196,7 @@ bool is_width_packed_op(std::string_view key) {
       "et_vk.linear_dq8ca_q4gsw.default",
       "et_vk.linear_q4gsw.default",
       "et_vk.rms_norm.default",
+      "et_vk.sdpa.default",
       "llama.custom_sdpa.default",
       "update_cache.default",
       "torchao.choose_qparams_affine.default"};
@@ -613,6 +623,7 @@ class VulkanEngineExecutable final : public EngineExecutable {
         graph_(std::make_unique<ComputeGraph>(config)) {
     method_.graph.rebuild_def_use();
     vulkan::lower_hf_attention(method_.graph);
+    vulkan::lower_sdpa(method_.graph);
     vulkan::fuse_quantized_embeddings(method_);
     vulkan::fuse_quantized_linears(method_);
     vulkan::lower_rms_norms(method_.graph);

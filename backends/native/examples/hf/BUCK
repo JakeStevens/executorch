@@ -1,0 +1,68 @@
+load("@fbcode_macros//build_defs:build_file_migration.bzl", "fbcode_target")
+load("@fbsource//xplat/executorch/build:runtime_wrapper.bzl", "runtime")
+
+oncall("executorch")
+
+fbcode_target(
+    _kind = runtime.python_library,
+    name = "hf_utils",
+    srcs = ["hf_utils.py"],
+    deps = [
+        "//caffe2:torch",
+        "//executorch/backends/native:lib",
+        "//executorch/exir:lib",
+    ],
+)
+
+fbcode_target(
+    _kind = runtime.python_binary,
+    name = "export_hf_llm",
+    srcs = ["export_hf_llm.py"],
+    main_function = "executorch.backends.native.examples.hf.export_hf_llm.main",
+    deps = [
+        "//caffe2:torch",
+        "//executorch/backends/native:lib",
+        "//executorch/backends/native/examples/hf:hf_utils",
+        "//executorch/exir:lib",
+        "//executorch/exir/native:native",
+        "fbsource//third-party/pypi/safetensors:safetensors",
+        "fbsource//third-party/pypi/transformers:transformers",
+        "//pytorch/ao:torchao",
+    ],
+)
+
+fbcode_target(
+    _kind = runtime.python_library,
+    name = "hf_whisper",
+    srcs = ["export_hf_whisper.py"],
+    visibility = ["//executorch/backends/native/test/..."],
+    deps = [
+        "//caffe2:torch",
+        "//executorch/backends/native/examples/hf:hf_utils",
+        "//executorch/exir:lib",
+        "//executorch/exir/native:native",
+        "fbsource//third-party/pypi/transformers:transformers",
+    ],
+)
+
+fbcode_target(
+    _kind = runtime.python_binary,
+    name = "export_hf_whisper",
+    main_function = "executorch.backends.native.examples.hf.export_hf_whisper.main",
+    deps = [
+        "//executorch/backends/native/examples/hf:hf_whisper",
+        "fbsource//third-party/pypi/safetensors:safetensors",
+    ],
+)
+
+fbcode_target(
+    _kind = runtime.python_binary,
+    name = "convert_meta_llama",
+    srcs = ["convert_meta_llama.py"],
+    main_function = "executorch.backends.native.examples.hf.convert_meta_llama.main",
+    deps = [
+        "//caffe2:torch",
+        "fbsource//third-party/pypi/safetensors:safetensors",
+        "fbsource//third-party/pypi/transformers:transformers",
+    ],
+)

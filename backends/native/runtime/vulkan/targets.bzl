@@ -22,6 +22,7 @@ def define_common_targets():
             "passes/InsertPrepack.cpp",
             "passes/LowerHFAttention.cpp",
             "passes/LowerRMSNorm.cpp",
+            "passes/LowerSDPA.cpp",
             "passes/MaterializeViewCopies.cpp",
         ],
         exported_headers = [
@@ -30,6 +31,7 @@ def define_common_targets():
             "passes/InsertPrepack.h",
             "passes/LowerHFAttention.h",
             "passes/LowerRMSNorm.h",
+            "passes/LowerSDPA.h",
             "passes/MaterializeViewCopies.h",
         ],
         exported_deps = [
