@@ -12,6 +12,9 @@
 #include <executorch/runtime/core/exec_aten/testing_util/tensor_factory.h>
 #include <executorch/runtime/core/exec_aten/testing_util/tensor_util.h>
 
+#include <cstdint>
+#include <limits>
+
 #include <gtest/gtest.h>
 
 using namespace ::testing;
@@ -74,4 +77,22 @@ TEST_F(OpRemainderOutTest, DoubleKeepsDoublePrecision) {
   // Rounding to float would be off by about 1.7e-5
   EXPECT_TENSOR_CLOSE_WITH_TOL(
       out, tf.make({2}, {789.123456789, 210.876543211}), 0, 1e-6);
+}
+
+TEST_F(OpRemainderOutTest, IntMinRemainderNegOneIsZero) {
+  // INT_MIN % -1 overflows because the quotient is not representable;
+  // ATen returns 0 instead of computing it.
+  TensorFactory<ScalarType::Int> tfInt;
+  TensorFactory<ScalarType::Long> tfLong;
+
+  Tensor self_int = tfInt.make({2}, {std::numeric_limits<int32_t>::min(), -7});
+  Tensor other_int = tfInt.make({2}, {-1, -1});
+  Tensor out_int = tfInt.zeros({2});
+  op_remainder_tensor_out(self_int, other_int, out_int);
+  EXPECT_TENSOR_EQ(out_int, tfInt.make({2}, {0, 0}));
+
+  Tensor self_long = tfLong.make({1}, {std::numeric_limits<int64_t>::min()});
+  Tensor out_long = tfLong.zeros({1});
+  op_remainder_scalar_out(self_long, -1, out_long);
+  EXPECT_TENSOR_EQ(out_long, tfLong.make({1}, {0}));
 }

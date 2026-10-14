@@ -14,6 +14,7 @@
 #include <ATen/cpu/vec/vec.h>
 #endif
 
+#include <limits>
 #include <type_traits>
 
 namespace torch {
@@ -214,6 +215,13 @@ template <
     typename CTYPE,
     typename std::enable_if<std::is_integral<CTYPE>::value, int>::type = 0>
 CTYPE remainder_override(CTYPE a, CTYPE b) {
+  if constexpr (std::is_signed<CTYPE>::value) {
+    // INT_MIN % -1 overflows because the quotient is not representable;
+    // ATen returns 0 instead of computing it.
+    if (a == std::numeric_limits<CTYPE>::min() && b == static_cast<CTYPE>(-1)) {
+      return static_cast<CTYPE>(0);
+    }
+  }
   CTYPE rem = a % b;
   if constexpr (std::is_signed<CTYPE>::value) {
     if (((a < 0) ^ (b < 0)) && rem != 0) {
